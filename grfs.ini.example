@@ -1,0 +1,39 @@
+; Copy to grfs.ini to change anything. Every key can also be set from the environment as
+; GRFS_<KEY>, and a few from the command line (python -m grfs --help).
+;
+; The defaults are meant to be left alone. In particular there is no setting for "the address to
+; tell clients": that is worked out per client from where it connected from, because it has to be
+; different for a game on this machine and a game on the network.
+
+[server]
+; What to listen on. 0.0.0.0 means every interface, which is what you want for playing with
+; someone else; 127.0.0.1 keeps it to this machine.
+bind = 0.0.0.0
+
+; Only set this if the address this server would work out for itself is not the one clients can
+; reach - a router doing NAT in front of it, or a machine with interfaces where the choice goes
+; wrong. Leave empty otherwise.
+advertise =
+
+; Ports. The game is told about the authentication port through the configuration service, and it
+; expects the secure server to be the next one up.
+onlineconfig_port = 80
+auth_port = 21030
+secure_port = 21031
+
+; The status page, http://127.0.0.1:8080/. Set to 0 to switch it off.
+panel_port = 8080
+
+; The game's own peer-to-peer port, written into the station URL handed back on registration.
+game_port = 2347
+
+; info is the normal level. debug adds the detail of each call; trace adds a line per packet and
+; is for hunting something specific - it is a lot of lines.
+log_level = info
+log_file = logs/grfs.log
+
+; An experiment, off unless set. The game has a module that works out the NAT type from servers
+; named by the configuration key punch_DetectUrls, and its screens can refuse to join a squad
+; with "Unable to join due to STRICT NAT". Ubisoft's own configuration never carried that key, so
+; whether the game asks for it here is unknown. Point it at something that logs and watch.
+; punch_detect_urls = udp:/address=192.168.1.8;port=3478

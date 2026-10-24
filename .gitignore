@@ -1,0 +1,9 @@
+# Machine-specific settings with real addresses.
+grfs.ini
+
+# Runtime state and logs. The log carries account names; the register carries names and pids.
+logs/
+data/
+
+__pycache__/
+*.pyc
