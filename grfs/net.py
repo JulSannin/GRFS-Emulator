@@ -14,15 +14,77 @@ Rules this layer keeps, each of them paid for by a bug in the previous attempt:
   the game strictly in order through a window that starts there.
 * Replies are signed with the signature of the connection the request came in on, and leave by
   the socket it arrived on.
+* On Windows a UDP socket is told not to report "port unreachable" (ignore_port_unreachable).
+  Every game that is closed leaves a port behind that the server still writes to for a while -
+  a resend, a notification, a ping answer - and Windows hands the ICMP answer to the next read
+  as an error. asyncio's Windows loop (before Python 3.12) stops reading a datagram socket for
+  good after such an error: the whole secure server went deaf to every player, and only a
+  busy moment was needed for it to happen.
 """
 
 import asyncio
+import ctypes
+import struct
+import sys
 
 from . import log as logs
 from .prudp import packet as P
 from .prudp.crypto import rc4
 from .rmc import message
+from .rmc.router import Errors
 from .rmc.stream import Reader, Writer
+
+
+# Fragments kept per connection while waiting for the rest of their message. Most of what the
+# game sends is a few fragments long, but a first statistics upload carries every dirty item row
+# of a new profile in one SendPlayerStatsInt32, and one blob stat may be 64 KB: a cap of 64
+# (about 61 KB) would throw such a message away half-built, every time it was resent. 512 is
+# about 490 KB, and still bounds what a broken sender can leave behind.
+FRAGMENTS_KEPT = 512
+
+
+# WSAIoctl's SIO_UDP_CONNRESET, _WSAIOW(IOC_VENDOR, 12); socket.ioctl does not take it.
+SIO_UDP_CONNRESET = 0x9800000C
+
+
+def ignore_port_unreachable(transport) -> bool:
+    """Switch off Windows' "port unreachable" errors on a datagram transport's socket (see the
+    module docstring). True when that was done or is not needed, False when Windows refused."""
+    if sys.platform != "win32":
+        return True
+    sock = transport.get_extra_info("socket")
+    if sock is None:
+        return False
+    ws2 = ctypes.WinDLL("ws2_32")
+    off = ctypes.c_uint32(0)
+    returned = ctypes.c_uint32(0)
+    ws2.WSAIoctl.argtypes = (ctypes.c_size_t, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32,
+                             ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_void_p,
+                             ctypes.c_void_p)
+    return ws2.WSAIoctl(sock.fileno(), SIO_UDP_CONNRESET, ctypes.byref(off), ctypes.sizeof(off),
+                        None, 0, ctypes.byref(returned), None, None) == 0
+
+
+def _whole_message(plain: bytes) -> bool:
+    """Whether these bytes start with an RMC size that accounts for exactly all of them."""
+    return len(plain) >= 4 and struct.unpack_from("<I", plain)[0] == len(plain) - 4
+
+
+def _fragment_run(fragments: dict, end: int):
+    """The sequence ids of the message ending at `end`, front to back, if all of it is here."""
+    run = [end]
+    expected = None
+    seq = end - 1
+    while seq in fragments:
+        part = fragments[seq][0]
+        if part == 0 or (expected is not None and part != expected):
+            return None
+        run.append(seq)
+        if part == 1:
+            return run[::-1]
+        expected = part - 1
+        seq -= 1
+    return None
 
 
 class PrudpServer(asyncio.DatagramProtocol):
@@ -39,6 +101,12 @@ class PrudpServer(asyncio.DatagramProtocol):
     # ----- socket ---------------------------------------------------------------------------
     def connection_made(self, transport):
         self.transport = transport
+        if not ignore_port_unreachable(transport):
+            self.log.warning("could not switch off port-unreachable errors on UDP %d: a game"
+                             " that quits may stop this socket from reading", self.port)
+
+    def error_received(self, exc):
+        self.log.warning("socket error on UDP %d: %s", self.port, exc)
 
     def sendto(self, data: bytes, endpoint) -> None:
         self.sent += 1
@@ -214,7 +282,7 @@ class PrudpServer(asyncio.DatagramProtocol):
             except P.PacketError as e:
                 self.log.warning("%s: %s", client.name or client.address, e)
                 return
-            full = self.reassemble(client, link, pkt.part, plain)
+            full = self.reassemble(client, link, pkt, plain)
             if full is None:
                 return
             self.handle_rmc(client, link, pkt, full)
@@ -222,30 +290,46 @@ class PrudpServer(asyncio.DatagramProtocol):
             if reliable:
                 link.end_answer()
 
-    def reassemble(self, client, link, part: int, plain: bytes):
-        """Fragments are numbered 1, 2, 3 ... with the last one carrying 0."""
-        if part == 0 and not link.fragments:
-            return plain
-        if part == 1 and link.fragments:
-            self.log.warning("%s: a new fragmented message while %d fragments were still"
-                             " buffered - dropping the old ones", client.name or client.address,
-                             len(link.fragments))
-            link.fragments.clear()
-            link.last_part = 0
-        if part != 0:
-            if part <= link.last_part:
-                self.log.trace("duplicate fragment %d - ignored", part)
-                return None
-            link.fragments.append(plain)
-            link.last_part = part
-            return None
-        link.fragments.append(plain)
-        full = b"".join(link.fragments)
-        self.log.debug("%s: reassembled %d fragments into %d bytes",
-                       client.name or client.address, len(link.fragments), len(full))
-        link.fragments.clear()
-        link.last_part = 0
-        return full
+    def reassemble(self, client, link, pkt: P.Packet, plain: bytes):
+        """Fragments are numbered 1, 2, 3 ... with the last one carrying 0, and travel under
+        consecutive sequence ids.
+
+        They are kept by sequence id, not in order of arrival, because on a lossy network they
+        do not arrive in order: the game resends only the fragment that went missing, after the
+        ones behind it. Joining them as they came spliced a message out of the fragments that
+        were there, threw it away as garbage, and then waited forever for the rest of a message
+        that had already been discarded. A message is complete when its last fragment and every
+        one in front of it, back to number 1, are here.
+        """
+        fragments = link.fragments
+        if pkt.part == 0:
+            before = fragments.get(pkt.seq - 1)
+            # A message of its own: what is in front of it is the end of another message, or
+            # nothing is and its size says it is all here. Otherwise it is the last fragment of
+            # a message whose front may still be on its way - it can arrive first.
+            if before is not None and before[0] == 0:
+                return plain
+            if before is None and _whole_message(plain):
+                return plain
+        fragments[pkt.seq] = (pkt.part, plain)
+        if pkt.part == 0:
+            self.log.debug("%s: packet %04X ends a message whose front is not here yet",
+                           client.name or client.address, pkt.seq)
+        for end in sorted(seq for seq, (part, _) in fragments.items() if part == 0):
+            run = _fragment_run(fragments, end)
+            if run is None:
+                continue
+            full = b"".join(fragments.pop(seq)[1] for seq in run)
+            self.log.debug("%s: reassembled %d fragments into %d bytes",
+                           client.name or client.address, len(run), len(full))
+            return full
+        if len(fragments) > FRAGMENTS_KEPT:
+            oldest = sorted(fragments)[:len(fragments) - FRAGMENTS_KEPT]
+            self.log.warning("%s: %d fragment(s) that never became a message - dropping them",
+                             client.name or client.address, len(oldest))
+            for seq in oldest:
+                del fragments[seq]
+        return None
 
     def handle_rmc(self, client, link, pkt, plain: bytes) -> None:
         try:
@@ -255,7 +339,15 @@ class PrudpServer(asyncio.DatagramProtocol):
                              logs.hexs(plain))
             return
         if msg.is_request:
-            self.backend.router.dispatch(self, client, link, pkt, msg)
+            try:
+                self.backend.router.dispatch(self, client, link, pkt, msg)
+            except Exception:
+                # The router answers every failure it knows about. This is for the ones it does
+                # not, because an unanswered call is resent by the game forever.
+                self.log.exception("%s: %s method %d failed on the way to an answer",
+                                   client.name or client.address,
+                                   self.backend.router.protocol_name(msg.protocol), msg.method)
+                self.send_error(client, link, pkt, msg, Errors.CORE_UNKNOWN)
         elif msg.success:
             self.log.debug("%s answered %s call %d", client.name or client.address,
                            self.backend.router.protocol_name(msg.protocol), msg.call_id)

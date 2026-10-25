@@ -1,21 +1,31 @@
 """FriendsProtocol (0x14): the friends screen, all thirteen methods the schema declares.
 
-    list         11 GetList   12 GetDetailedList   13 GetRelationships
+    list         13 GetRelationships   12 GetDetailedList   11 GetList
     FIND         2 AddFriendByName        (SearchFriendsProtocol does the searching)
-    menu         9 ClearRelationship      "Remove Friend" and "Remove"
+    menu         9 ClearRelationship      "Remove Friend", and "Remove" on BLOCKLIST
                  7 BlackList              "Block"
+    BLOCKLIST    2 AddFriendByName(name, 0, "")   "Unblock" - the game has no other way
     INVITATIONS  5 AcceptFriendship       6 DeclineFriendship
 
-Three things here were each paid for with a run of the game:
+Each refetch of the screen is one composite on the client: 13 GetRelationships, UbiFriends 7,
+UbiAccountManagement 14, then 12 GetDetailedList asked about 3. Any of them failing fails the
+whole fetch and the client retries every five seconds, so none of them may.
 
-* 13 GetRelationships returns a *total count* before the list. Without it the client took the
-  list length for the total, then read the list's own length out of the first entry's pid, and
-  the contact list stayed empty whatever was in the entries.
-* byRelationship on 11 and 12 is a *filter*, not a label to echo back. Answering every account
-  with the asked-for value stamped on it put every friend under INVITATIONS, because the client
-  only ever sends those calls asking about 3 - requests waiting to be answered.
-* The status byte is 0 for Offline and anything else for Online. An offline friend stays in the
-  list; the client just stops looking for their game.
+What each list holds, and why (proven in the client, see grfs.friends):
+
+* 13 GetRelationships is the screen: rel 1 friends, 2 requests sent, 3 requests received, with
+  the status byte saying online. Nobody blocked either way, and never a row with rel 0 - one
+  of those is drawn as an ordinary friend.
+* 12 GetDetailedList(3) is the BLOCKLIST and nothing else. The client stamps every entry it
+  gets back "blocked". It used to answer with the requests received, which put every request on
+  the screen twice. (1) is the confirmed friends, asked by Overlord; (2), which the client
+  never sends, the requests sent; 0 everything 13 would list.
+* 13 returns a *total count* before the list. Without it the client took the list length for
+  the total, then read the list's own length out of the first entry's pid, and the contact list
+  stayed empty whatever was in the entries.
+
+Every change that alters another player's lists notifies that player (type 1000, see
+_tell): it is the only way their screen learns of it. The player who acted is not told.
 
 Presence needs no protocol of its own: the game sends a packet about once a second, each one
 stamps when it was last heard from, and silence is the only honest signal there is.
@@ -30,20 +40,34 @@ class Friends(Service):
     protocol_id = protocols.FRIENDS
     protocol_name = "FriendsProtocol"
 
+    def __init__(self, backend):
+        super().__init__(backend)
+        # Every way of changing a friendship - this protocol, the Uplay one, a friend request
+        # message - goes through the store, so the store is where the telling is hooked in.
+        backend.friends.on_change = self._tell
+
     # ----- the list --------------------------------------------------------------------------
     def GetList(self, ctx, byRelationship, bReversed=False):
-        """Just the pids. `bReversed` is accepted and ignored: both directions of every
-        relationship are stored, so the stored value already answers either question."""
+        """Just the pids, by the same filter as GetDetailedList. `bReversed` is accepted and
+        ignored: both directions of every relationship are stored, so the stored value already
+        answers either question."""
         return {"lstFriendsList": [c.pid for c in self._filtered(ctx, byRelationship)]}
 
     def GetDetailedList(self, ctx, byRelationship, bReversed=False):
-        """The entries the friends screen draws. Status here is free text - the game's own words,
-        unlike the byte GetRelationships uses."""
+        """Asked about 3 this is the BLOCKLIST tab (TaskRDV_GetBlacklist), and about 1 the
+        friends. Status here is free text - the game's own words, unlike the byte
+        GetRelationships uses. The relationship echoes the question: the client ignores it for
+        the blacklist, and for 1 and 2 it is what the entry is anyway."""
+        rows = self._filtered(ctx, byRelationship)
+        if byRelationship == model.REQUEST_RECEIVED:
+            self.log.info("%s has %d player(s) blocked: %s", ctx.client.name, len(rows),
+                          ", ".join(c.name for c in rows) or "-")
         return {"lstFriendsList": [
-            {"m_pid": c.pid, "m_strName": c.name, "m_byRelationship": c.relationship,
+            {"m_pid": c.pid, "m_strName": c.name,
+             "m_byRelationship": byRelationship or c.relationship,
              "m_uiDetails": c.details,
              "m_strStatus": "Online" if self.backend.is_online(c.pid) else "Offline"}
-            for c in self._filtered(ctx, byRelationship)]}
+            for c in rows]}
 
     def GetRelationships(self, ctx, resultRange=None):
         contacts = self._contacts(ctx)
@@ -125,10 +149,27 @@ class Friends(Service):
         return self.backend.friends.contacts(self._me(ctx))
 
     def _filtered(self, ctx, relationship) -> list:
+        """What 11 and 12 answer for one byRelationship. 3 is the blacklist in these two calls,
+        not the requests received - those reach the screen through 13 only."""
+        if relationship == model.REQUEST_RECEIVED:
+            return self.backend.friends.blacklist(self._me(ctx))
         contacts = self._contacts(ctx)
         if not relationship:
             return contacts
         return [c for c in contacts if c.relationship == relationship]
+
+    def _tell(self, pid: int, actor: int, kind: int) -> None:
+        """A NotificationEvent of type 1000 to a player whose lists changed.
+
+        The client reads only the family (type / 1000) and param2: 2 posts "pending changed",
+        1 "friend changed", and both just mark the list dirty, which a per-frame poll turns into
+        a full refetch within five seconds (9115A0, A4DD60, DLL 103DAFEA). The subtype, the text
+        and param3 are never read; param1 is the player who acted, as the client expects.
+        """
+        told = self.backend.notify(pid, 1000, source=actor, param1=actor, param2=kind, text="")
+        self.log.info("%s %s about %s", "told" if told else "could not tell",
+                      self.backend.accounts.name_for(pid) or "0x%X" % pid,
+                      self.backend.accounts.name_for(actor) or "0x%X" % actor)
 
     def _ask(self, ctx, name: str, message: str, details: int) -> bool:
         """Adding somebody who is not here answers false rather than failing the call: these

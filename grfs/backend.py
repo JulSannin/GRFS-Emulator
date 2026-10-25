@@ -20,6 +20,7 @@ from .prudp import packet as P
 from .prudp.connection import ClientTable
 from .rmc.ddl import Schema
 from .rmc.router import Router
+from .sessions import Sessions
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCHEMA_PATH = os.path.join(ROOT, "schema", "grfs-ddl.json")
@@ -36,6 +37,9 @@ PRESENCE_WINDOW = 90.0
 # should not have them thrown out from under them.
 FORGET_AFTER = 600.0
 
+# The game's own connection to a server: stream 3 (RV secure), port 15. Telemetry is port 14.
+PLAYER_VPORT = 0x3F
+
 
 class Backend:
     def __init__(self, config: Config = None, schema_path: str = None, data_dir: str = None):
@@ -44,7 +48,11 @@ class Backend:
         self.started = time.time()
         self.schema = Schema().load_ddl_json(schema_path or SCHEMA_PATH)
         self.protocol_names = dict(protocols.NAMES)
-        self.data_dir = data_dir if data_dir is not None else DATA_DIR
+        if data_dir is None:
+            data_dir = self.config.get("data_dir") or DATA_DIR
+            if not os.path.isabs(data_dir):
+                data_dir = os.path.join(ROOT, data_dir)
+        self.data_dir = data_dir
         self.accounts = Accounts(os.path.join(self.data_dir, "accounts.json")
                                  if self.data_dir else None)
         self.friends = Friends(self.accounts,
@@ -55,6 +63,9 @@ class Backend:
             self.log.info("auto_friends is on: everyone with an account here is everyone else's"
                           " friend, and adding or removing is ignored")
         self.clients = ClientTable()
+        # Open game sessions and invitations. Kept in memory only: each one points at a running
+        # game, and none of them is still running after a restart.
+        self.sessions = Sessions(now=self.now)
         self.router = Router(self)
         self.nat = NatEcho(self)
         self.server_pid = SERVER_PID
@@ -63,6 +74,9 @@ class Backend:
         self.game_port = self.config.int("game_port", 2347)
         self._advertised = {}
         self.servers = {}
+        # Anything else that keeps state on disk - clans, statistics - adds itself here with
+        # add_store, and is saved with the accounts when the server stops.
+        self.stores = []
         self.install_services()
 
     def install_services(self) -> None:
@@ -71,6 +85,45 @@ class Backend:
             service = self.router.add(factory(self))
             self.log.debug("%s (0x%02X): %s", service.protocol_name, service.protocol_id,
                            ", ".join(name for _, name in service.handled()) or "nothing yet")
+
+    # ----- state on disk --------------------------------------------------------------------
+    def data_path(self, filename: str):
+        """Where a store keeps its file, or None when this server keeps nothing on disk."""
+        return os.path.join(self.data_dir, filename) if self.data_dir else None
+
+    def add_store(self, store):
+        """Register something with a save() to be called when the server stops."""
+        self.stores.append(store)
+        return store
+
+    def save(self) -> None:
+        for store in [self.accounts, self.friends] + self.stores:
+            store.save()
+
+    # ----- telling a player something -------------------------------------------------------
+    def notify(self, pid: int, event_type: int, source: int = 0, param1: int = 0,
+               param2: int = 0, text: str = "", param3: int = 0) -> bool:
+        """Send one NotificationEvent to a player's own connection on the secure server.
+
+        Fire and forget, as the live servers did: the client answers, but nothing in the answer
+        matters. Returns whether the player was there to be told.
+        """
+        client = self.clients.by_pid(pid)
+        server = self.servers.get("secure")
+        if client is None or server is None:
+            return False
+        link = client.find_link(self.secure_port, PLAYER_VPORT)
+        if link is None:
+            return False
+        mdef = self.schema.method("NotificationProtocol", 1)
+        body = self.schema.encode_request(mdef, {"oEvent": {
+            "m_pidSource": source, "m_uiType": event_type, "m_uiParam1": param1,
+            "m_uiParam2": param2, "m_strParam": text, "m_uiParam3": param3}})
+        server.send_request(client, link, protocols.NOTIFICATION, 1, body)
+        self.log.debug("told %s: notification %d (%d, %d, %r, %d) from 0x%X",
+                       client.name or client.address, event_type, param1, param2, text, param3,
+                       source)
+        return True
 
     # ----- odds and ends --------------------------------------------------------------------
     def now(self) -> float:
@@ -92,12 +145,47 @@ class Backend:
         client = self.clients.by_pid(pid)
         return client is not None and (self.now() - client.last_seen) < PRESENCE_WINDOW
 
+    def notice_departures(self) -> list:
+        """Tell the friends of every player who went quiet since the last look, and of every
+        one who came back.
+
+        A friend's screen shows a player online until something makes it refetch, and nothing
+        else would: the client has no presence notification, and leaving a game sends nothing
+        either - a DISCONNECT is part of a normal login (see net). Silence past the presence
+        window is the sign-out, so that is when the friends are told, with the same "friend
+        changed" notification a sign-in sends (services.secure.tell_friends). Not while the same
+        player is still here from another record. Returns the clients that went away."""
+        secure = self.router.service_for(protocols.SECURE_CONNECTION)
+        now = self.now()
+        went = []
+        for client in self.clients:
+            if not client.pid or not client.name:
+                continue
+            quiet = now - client.last_seen >= PRESENCE_WINDOW
+            if quiet == client.away:
+                continue
+            client.away = quiet
+            if quiet and self.is_online(client.pid):
+                continue                     # another record of the same player is live
+            if quiet:
+                went.append(client)
+            if secure is not None:
+                secure.tell_friends(client)
+        return went
+
     def forget_quiet_clients(self) -> list:
         gone = self.clients.reap(FORGET_AFTER, self.now())
         for client in gone:
             self.log.info("forgetting %s at %s:%d - nothing for %d minutes",
                           client.name or "an unnamed client", client.endpoint[0],
                           client.endpoint[1], FORGET_AFTER // 60)
+            # A game that is gone is out of every session it was in, as if it had left each one:
+            # a session it hosted waits for one of the others to take over, and one nobody is
+            # left in goes. Not while the same player is still here from another port.
+            if client.pid and self.clients.by_pid(client.pid) is None:
+                for session in self.sessions.forget(client.pid):
+                    self.log.info("%s is out of session %d", client.name or "pid 0x%X"
+                                  % client.pid, session.id)
         return gone
 
     def ubi_account_id(self, name: str) -> str:
@@ -166,13 +254,16 @@ class Backend:
             "clients": [
                 {"name": c.name, "pid": c.pid, "address": "%s:%d" % c.endpoint,
                  "connections": len(c.links), "last_seen": c.last_seen,
-                 "urls": list(c.urls),
+                 "urls": list(c.urls), "away": c.away,
                  "friends": [{"name": f.name, "pid": f.pid, "relationship": f.relationship,
                               "online": self.is_online(f.pid)}
-                             for f in self.friends.contacts(c.name)] if c.name else []}
+                             for f in self.friends.contacts(c.name)] if c.name else [],
+                 "blocked": [f.name for f in self.friends.blacklist(c.name)] if c.name else []}
                 for c in self.clients
             ],
-            "nat": {"answered": self.nat.answered, "keep_alives": self.nat.keep_alives},
+            "sessions": self.sessions.status(self.accounts.name_for),
+            "nat": {"answered": self.nat.answered, "keep_alives": self.nat.keep_alives,
+                    "told_open": getattr(self.servers.get("punch"), "resolved", 0)},
             "packets": {name: {"in": s.received, "out": s.sent}
                         for name, s in self.servers.items()},
         }

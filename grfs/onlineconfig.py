@@ -3,7 +3,7 @@
     GET /OnlineConfigService.svc/GetOnlineConfig?onlineConfigID=<key>&target=client
     Host: onlineconfigservice.ubi.com
 
-The answer is a JSON list of name/value pairs. Only one of them matters to us: SandboxUrl, the
+The answer is a JSON list of name/values pairs. The one that matters most is SandboxUrl, the
 address of the authentication server. The game reaches this service because the machine's hosts
 file points onlineconfigservice.ubi.com at the server.
 
@@ -16,6 +16,20 @@ instead of parsing something it did not expect.
 The address in SandboxUrl is worked out per request from who is asking, for the same reason the
 login does it that way: a game on this machine needs 127.0.0.1 and a game on the network needs
 the address that reaches us.
+
+Two keys Ubisoft's service does not send are added.
+
+PassportKillSwitch switches the online pass off. The sign-in task (916DF4) only asks whether the
+key is there, never what it says; without it the pass is on, and the client then looks for a
+"FreeTrial" privilege at every platform sign-in (TaskRDV_CheckOnlinePassportActivation) and
+publishes PLAYER_PASS=CANCELLED when it finds none - ahead of the session search. There is no
+pass to sell here, so the check is switched off rather than fed a privilege of the right name.
+
+The other is punch_DetectUrls, the two servers the game's
+NAT type detector talks to (grfs.punch). The client reads it once, at launch, and starts
+detecting only if the key has at least two values, each "host:port" - it splits at the first
+colon and atoi's the rest. An earlier experiment here sent one "udp:/address=..;port=.." value,
+which fails both tests and is exactly as good as not sending the key.
 """
 
 import asyncio
@@ -51,9 +65,14 @@ class OnlineConfigServer:
         self.served = 0
         self.server = None
 
-    async def start(self):
+    async def start(self, port: int = None):
+        """Listen on the configured port, or on `port` - 0 meaning any free one, which is what
+        the test harness asks for so that a run never collides with a server already up."""
         bind = self.backend.config.get("bind", "0.0.0.0")
+        if port is not None:
+            self.port = port
         self.server = await asyncio.start_server(self.handle, bind, self.port)
+        self.port = self.server.sockets[0].getsockname()[1]
         self.log.info("listening on %s:%d%s", bind, self.port, PATH)
         return self.server
 
@@ -115,19 +134,17 @@ class OnlineConfigServer:
     # ----- the configuration itself ---------------------------------------------------------
     def config_for(self, address: str) -> str:
         advertised = self.backend.address_for(address)
-        values = [("SandboxUrl", "prudp:/address=%s;port=%d" % (advertised,
-                                                                self.backend.auth_port))]
-        values.extend(OTHERS)
-        extra = self.backend.config.get("punch_detect_urls")
-        if extra:
-            # Unverified, and off unless asked for. The game has a module of its own that works
-            # out the NAT type from servers named by this key, and its screens can refuse to join
-            # ("Unable to join due to STRICT NAT"). Ubisoft's own configuration does not carry
-            # the key at all, so whether the game ever uses it here is exactly what setting this
-            # is for: point it at something that logs and watch whether anything arrives.
-            values.append(("punch_DetectUrls", extra))
-            self.log.info("offering punch_DetectUrls=%s (an experiment - see the comment)", extra)
-        body = json.dumps([{"Name": name, "Values": [value]} for name, value in values])
+        rows = [("SandboxUrl", ["prudp:/address=%s;port=%d" % (advertised,
+                                                               self.backend.auth_port)])]
+        rows.extend((name, [value]) for name, value in OTHERS)
+        rows.append(("PassportKillSwitch", ["1"]))
+        punch = self.backend.servers.get("punch")
+        if punch is not None and punch.port:
+            # Both on the address this game reaches us at. The second is contacted only when
+            # something was lost on the way (see grfs.punch), and P+1 answers that as well.
+            rows.append(("punch_DetectUrls", ["%s:%d" % (advertised, punch.port),
+                                              "%s:%d" % (advertised, punch.port + 1)]))
+        body = json.dumps([{"Name": name, "Values": values} for name, values in rows])
         # The live service escapes the slashes in its URLs. It makes no difference to a JSON
         # reader, and it keeps the bytes identical to a capture of the real thing.
         return body.replace("/", "\\/")

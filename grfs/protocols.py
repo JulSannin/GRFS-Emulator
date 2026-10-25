@@ -42,7 +42,8 @@ MAP_LIST = 0x79
 TRACKING_EXTENSION = 0x7D
 
 # --- Hermes, registered by the client but not yet seen on the wire ------------------------
-IP2LOCATION = 0x70
+# The ids are the ones each protocol's registration pushes (registerFriendProtocols, 8B3055..).
+META_SESSION = 0x70           # never called: every wrapper of its 18 stubs is unreferenced
 GAME_INFO = 0x71
 CONTACTS_EXTENSIONS = 0x72
 HERMES_ACHIEVEMENTS = 0x74
@@ -50,6 +51,7 @@ SOCIAL_NETWORKS = 0x75
 GAME_STORAGE_FILE_VERSION = 0x76
 GR5_AWARD = 0x77
 UPLAY_WIN = 0x78
+IP2LOCATION = 0x7C            # never called
 EVENTS_TRACKING = 0x7E
 ONLINE_PASS = 0x7F
 
@@ -94,6 +96,7 @@ NAMES = {
     MISC: "MiscProtocol",
     MAP_LIST: "MapListProtocol",
     TRACKING_EXTENSION: "TrackingExtensionProtocol",
+    META_SESSION: "MetaSessionProtocol",
     IP2LOCATION: "IP2LocationProtocol",
     GAME_INFO: "GameInfoProtocol",
     CONTACTS_EXTENSIONS: "ContactsExtensionsProtocol",

@@ -27,7 +27,7 @@ class Link:
     """One PRUDP connection: a virtual port of the game talking to one of our sockets."""
 
     __slots__ = ("key", "server_port", "vport", "signature", "session", "reliable_seq",
-                 "out_seq", "data_seen", "fragments", "last_part", "_answers", "_recording",
+                 "out_seq", "data_seen", "fragments", "_answers", "_recording",
                  "created")
 
     def __init__(self, server_port: int, vport: int):
@@ -46,8 +46,8 @@ class Link:
         # that way), so this stream is not windowed and the numbering only has to keep rising.
         self.out_seq = 0
         self.data_seen = False
-        self.fragments = []
-        self.last_part = 0
+        # Fragments of a message still being received: sequence id -> (part number, bytes).
+        self.fragments = {}
         self._answers = OrderedDict()
         self._recording = None
         self.created = time.monotonic()
@@ -95,7 +95,6 @@ class Link:
         self.out_seq = 0
         self.data_seen = False
         self.fragments.clear()
-        self.last_part = 0
 
     def __repr__(self):
         return "<Link %d/%02X sig=%08X session=%02X>" % (self.server_port, self.vport,
@@ -141,6 +140,8 @@ class Client:
         self.links = {}
         self.call_id = 0
         self.last_seen = time.time()
+        # Whether this game's friends have been told it went quiet (Backend.notice_departures).
+        self.away = False
         self.logged_in_at = None
         # Set when the front end asks for the map list, which is the first thing it does once the
         # main menu is actually on screen. A notification pushed before that is answered at the

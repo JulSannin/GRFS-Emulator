@@ -1,12 +1,19 @@
 """UbiFriendsProtocol (0x2F): Ubisoft's own friends layer, beside Quazal's.
 
-The friends screen has several tabs - ALL FRIENDS, UPLAY FRIENDS, RECENTLY PLAYED, BLOCKLIST,
-INVITATIONS - and fills them from two calls it makes side by side: FriendsProtocol 12
-GetDetailedList and this protocol's 7 GetRelationshipsList. Answering only the first leaves the
-UPLAY FRIENDS tab empty.
+Every refetch of the friends screen calls 7 GetRelationshipsList straight after FriendsProtocol
+13 GetRelationships, inside the same composite, so failing it fails the whole fetch. What it
+returns is merged into the same list: each entry becomes a contact with state 0 - "offline" -
+unless a contact of that name is already there (TaskUbi_RetrieveFriendList 913B40). Since 13
+has already listed everyone, this answers with the same set and adds nothing new; and it never
+includes a blocked player, because one would show as an offline friend beside its BLOCKLIST
+entry. m_relationship and m_onBlacklist are only logged by the client.
 
 An entry here carries no name, only an account id, which is why the client goes straight on to
 UbiAccountManagement 14 to turn those ids into names (see ubi_accounts).
+
+The actions are the same as FriendsProtocol's and go through the same store, so they notify
+the other player in the same way. RemoveFromBlacklist is the only unblock that is not a friend
+request; the game itself never sends it.
 """
 
 from .. import protocols
@@ -29,7 +36,7 @@ class UbiFriends(Service):
                 "m_to": {"m_principalId": contact.pid,
                          "m_ubiAccountId": self.backend.ubi_account_id(contact.name)},
                 "m_relationship": contact.relationship,
-                "m_onBlacklist": contact.blocked,
+                "m_onBlacklist": False,
                 # Quazal packs a date into one 64-bit field rather than counting from an epoch.
                 "m_friendsDate": pack_datetime(),
             })

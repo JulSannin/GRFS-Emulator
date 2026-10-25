@@ -32,13 +32,30 @@ game_port = 2347
 ; friendships get in the way when something else is wrong.
 auto_friends = no
 
+; Two copies of the game on one machine, for a co-op test (tools/launch_game.py). Ubisoft Connect
+; signs both in to the same account; with this on, the second copy plays as <name>_2 instead of
+; replacing the first. Off by default: on a server for real players it would make a quick
+; restart look like a stranger.
+twin_logins = no
+
 ; info is the normal level. debug adds the detail of each call; trace adds a line per packet and
 ; is for hunting something specific - it is a lot of lines.
 log_level = info
 log_file = logs/grfs.log
 
-; An experiment, off unless set. The game has a module that works out the NAT type from servers
-; named by the configuration key punch_DetectUrls, and its screens can refuse to join a squad
-; with "Unable to join due to STRICT NAT". Ubisoft's own configuration never carried that key, so
-; whether the game asks for it here is unknown. Point it at something that logs and watch.
-; punch_detect_urls = udp:/address=192.168.1.8;port=3478
+; The NAT type detector, on this UDP port and the one above it (both need to be open in a
+; firewall). The game learns its NAT type only from servers named by the configuration key
+; punch_DetectUrls, and refuses some joins with "Unable to join due to STRICT NAT"; this one
+; tells every game its NAT is Open (see grfs/punch.py). 0 switches it off, and the type is then
+; Unknown, as it is with Ubisoft's own configuration.
+punch_port = 21032
+
+; One message for the main menu's news panel. Nothing is shown while both are empty.
+news_title =
+news_body =
+
+; The server's tuning switches the game asks for (MiscProtocol.GetGenericSettings), as
+; key=value pairs; a value is a number or a date YYYY-MM-DD[ HH:MM]. 2 is an XP multiplier x 10,
+; applied between the dates in 0 and 1 - this is double XP over Christmas. The full list of keys
+; is in grfs/services/misc.py.
+; generic_settings = 2=20, 0=2026-12-24, 1=2026-12-27 06:00

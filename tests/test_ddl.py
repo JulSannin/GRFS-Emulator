@@ -80,6 +80,18 @@ class DdlCodec(unittest.TestCase):
         err = message.parse(message.error(0x2A, 7, 0x80010001))
         self.assertEqual((err.success, err.error, err.call_id), (False, 0x80010001, 7))
 
+    def test_a_secret_parameter_is_skipped_not_read(self):
+        s = Schema().load_ddl_json(SCHEMA)
+        mdef = s.method("PrivilegesProtocol", 2)
+        body = s.encode_request(mdef, {"uniqueKey": "AAAA-BBBB", "languageCode": "en"})
+        s.keep_secret("PrivilegesProtocol", "ActivateKey", "uniqueKey")
+        self.assertIn(b"AAAA-BBBB", s.encode_request(mdef, {"uniqueKey": "AAAA-BBBB"}))
+        self.assertEqual(s.decode_request(mdef, body), {"languageCode": "en"})
+        with self.assertRaises(TypeError):
+            s.keep_secret("FriendsProtocol", "AddFriend", "uiPlayer")
+        with self.assertRaises(KeyError):
+            s.keep_secret("PrivilegesProtocol", "ActivateKey", "nothing")
+
     def test_datetime_packing(self):
         t = datetime.datetime(2026, 10, 24, 18, 30, 5)
         self.assertEqual(unpack_datetime(pack_datetime(t)), t)

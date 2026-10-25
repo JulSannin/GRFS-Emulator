@@ -73,6 +73,7 @@ PAGE = """<!doctype html>
   <div class="cards">
     <div class="card"><span>Players</span><b id="n-clients">0</b></div>
     <div class="card"><span>Accounts</span><b id="n-accounts">0</b></div>
+    <div class="card"><span>Sessions</span><b id="n-sessions">0</b></div>
     <div class="card"><span>NAT answered</span><b id="n-nat">0</b></div>
     <div class="card"><span>Packets in</span><b id="n-in">0</b></div>
     <div class="card"><span>Packets out</span><b id="n-out">0</b></div>
@@ -80,6 +81,10 @@ PAGE = """<!doctype html>
   <section>
     <h2>Connected</h2>
     <div id="clients"></div>
+  </section>
+  <section>
+    <h2>Sessions</h2>
+    <div id="sessions"></div>
   </section>
   <section>
     <h2>Log</h2>
@@ -106,14 +111,40 @@ function duration(seconds) {
 function clientsTable(rows, now) {
   if (!rows.length) return '<div class="empty">Nobody is signed in. Start the game.</div>';
   const head = "<tr><th>Player</th><th>PID</th><th>Address</th><th>Links</th>" +
-               "<th>Last heard</th><th>Station URLs</th></tr>";
+               "<th>Last heard</th><th>Friends</th><th>Station URLs</th></tr>";
   return "<table>" + head + rows.map(c =>
-    "<tr><td>" + (c.name || "<i>signing in</i>") + "</td>" +
+    "<tr><td>" + escapeHtml(c.name || "") + (c.name ? "" : "<i>signing in</i>") + "</td>" +
     '<td class="mono">0x' + c.pid.toString(16).toUpperCase() + "</td>" +
     '<td class="mono">' + c.address + "</td>" +
     "<td>" + c.connections + "</td>" +
-    "<td>" + ago(now - c.last_seen) + "</td>" +
-    '<td class="urls">' + (c.urls.join("<br>") || "-") + "</td></tr>").join("") + "</table>";
+    "<td>" + ago(now - c.last_seen) + (c.away ? " (away)" : "") + "</td>" +
+    "<td>" + friendsCell(c) + "</td>" +
+    '<td class="urls">' + (c.urls.map(escapeHtml).join("<br>") || "-") + "</td></tr>").join("") +
+    "</table>";
+}
+
+// Relationship 1 is a friend, 2 a request sent, 3 a request received (grfs.friends).
+function friendsCell(c) {
+  const mark = {1: "", 2: " (asked)", 3: " (asks)"};
+  const names = c.friends.map(f => escapeHtml(f.name) + (mark[f.relationship] || "") +
+                                   (f.online ? " *" : ""));
+  const blocked = c.blocked.map(n => escapeHtml(n) + " (blocked)");
+  return names.concat(blocked).join(", ") || "-";
+}
+
+function sessionsTable(rows) {
+  if (!rows.length) return '<div class="empty">Nobody is hosting.</div>';
+  const head = "<tr><th>Session</th><th>Host</th><th>Public</th><th>Private</th>" +
+               "<th>Invitations</th><th>Attributes</th></tr>";
+  return "<table>" + head + rows.map(s =>
+    '<tr><td class="mono">' + s.type + "/" + s.id + "</td>" +
+    "<td>" + (s.host ? escapeHtml(s.host_name || "0x" + s.host.toString(16)) :
+              "<i>waiting for a new host</i>") + "</td>" +
+    "<td>" + s.used[0] + " / " + s.capacity[0] + "</td>" +
+    "<td>" + s.used[1] + " / " + s.capacity[1] + "</td>" +
+    "<td>" + s.invitations + "</td>" +
+    '<td class="urls">' + Object.entries(s.attributes).map(([k, v]) => k + "=" + v).join(" ") +
+    "</td></tr>").join("") + "</table>";
 }
 
 async function tick() {
@@ -136,6 +167,8 @@ async function tick() {
   $("n-in").textContent = into;
   $("n-out").textContent = out;
   $("clients").innerHTML = clientsTable(data.clients, now);
+  $("n-sessions").textContent = data.sessions.length;
+  $("sessions").innerHTML = sessionsTable(data.sessions);
 
   const log = $("log");
   const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 24;
@@ -176,11 +209,15 @@ class Panel:
         self.port = backend.config.int("panel_port", 8080)
         self.server = None
 
-    async def start(self):
-        if not self.port:
+    async def start(self, port: int = None):
+        """Configured port 0 switches the page off. An explicit `port` of 0 instead means any
+        free one - the test harness's way of getting a page that cannot collide with anything."""
+        if port is None and not self.port:
             return None
         bind = self.backend.config.get("bind", "0.0.0.0")
-        self.server = await asyncio.start_server(self.handle, bind, self.port)
+        self.server = await asyncio.start_server(self.handle, bind,
+                                                 self.port if port is None else port)
+        self.port = self.server.sockets[0].getsockname()[1]
         shown = "127.0.0.1" if bind in ("0.0.0.0", "") else bind
         self.log.info("status page on http://%s:%d/", shown, self.port)
         return self.server

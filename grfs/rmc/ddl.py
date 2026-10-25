@@ -48,6 +48,7 @@ class Param:
     name: str
     type: TypeRef
     direction: int
+    secret: bool = False      # skipped when a request is read; see Schema.keep_secret
 
 
 @dataclass
@@ -161,6 +162,20 @@ class Schema:
             proto.methods[mid] = m
         self.protocols[name] = proto
 
+    def keep_secret(self, protocol: str, method: str, param: str) -> None:
+        """Never read this request parameter: skip it on the wire, as SENSITIVE does for class
+        fields, so it is neither in memory past the packet nor in a log line. Only strings -
+        what a typed key or password is. Writing it, as a client does, is unaffected."""
+        proto = self.protocols.get(protocol)
+        mdef = next((m for m in proto.methods.values() if m.name == method), None)             if proto else None
+        p = next((p for p in mdef.params if p.name == param), None) if mdef else None
+        if p is None:
+            raise KeyError("%s.%s has no parameter %s" % (protocol, method, param))
+        if p.type.name != "string" or p.direction != IN:
+            raise TypeError("only a string a request carries can be kept secret, not %s %s"
+                            % (p.type, param))
+        p.secret = True
+
     def method(self, protocol: str, mid: int):
         p = self.protocols.get(protocol)
         return p.methods.get(mid) if p else None
@@ -262,7 +277,12 @@ class Schema:
     # ----- methods -------------------------------------------------------------------------
     def decode_request(self, m: MethodDef, data: bytes) -> dict:
         r = Reader(data)
-        args = {p.name: self.read(r, p.type) for p in m.inputs}
+        args = {}
+        for p in m.inputs:
+            if p.secret:
+                r.skip_string()
+            else:
+                args[p.name] = self.read(r, p.type)
         if r.remaining():
             args["__trailing__"] = r.rest()
         return args
@@ -388,8 +408,10 @@ def describe(value, limit: int = 160) -> str:
         if isinstance(v, bytes):
             return "<%d bytes>" % len(v)
         if isinstance(v, dict):
+            # Keys are field names, except in a map handed back as a dict, which may be keyed by
+            # pid - and a log line that raises takes the answer down with it.
             return "{" + ", ".join("%s=%s" % (k, fmt(x)) for k, x in v.items()
-                                   if not k.startswith("__") or k == "__class__") + "}"
+                                   if not str(k).startswith("__") or k == "__class__") + "}"
         if isinstance(v, (list, tuple)):
             inner = ", ".join(fmt(x) for x in v[:8])
             return "[" + inner + (", ...%d" % len(v) if len(v) > 8 else "") + "]"

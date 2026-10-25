@@ -7,3 +7,6 @@ data/
 
 __pycache__/
 *.pyc
+
+# Built bundles and the downloaded Python they are made from.
+dist/

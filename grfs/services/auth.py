@@ -30,10 +30,21 @@ BUILD = "GRFS-Emulator"
 # to accept, and the login is the worst possible place to improvise.
 LOGINEX_TAIL = b"\x01\x00\x00\x00"
 
+# twin_logins: how recently a game must have been heard from to count as still running when a
+# second one signs in under its name. The game sends something about once a second; a game that
+# was closed and started again takes far longer than this to get back to its login.
+TWIN_LIVE = 10.0
+
 
 class TicketGranting(Service):
     protocol_id = protocols.TICKET_GRANTING
     protocol_name = "TicketGrantingProtocol"
+
+    def __init__(self, backend):
+        super().__init__(backend)
+        # twin_logins: (name, source address) -> the name that game was given, so that each copy
+        # comes back under its own name after a restart.
+        self._twins = {}
 
     # ----- 1 Login ---------------------------------------------------------------------------
     def Login(self, ctx, strUserName):
@@ -70,6 +81,41 @@ class TicketGranting(Service):
         return {"retval": SUCCESS, "bufResponse": auth.ticket}
 
     # -----------------------------------------------------------------------------------------
+    def _twin_name(self, client, name: str) -> str:
+        """twin_logins: the name a second copy of the game signed in to the same account plays
+        under - name_2, name_3 - each with a pid of its own.
+
+        Ubisoft Connect gives every copy of the game on one machine the same account, and one
+        account is one player here: the second login would take the first one's place. With two
+        copies running for a co-op test the second has to be somebody else, or the session it
+        joins already has it as the host.
+
+        A copy is the second one when another game signed in under this name is still running,
+        from another endpoint. The name it got is remembered against its address, so a copy on an
+        address of its own (tools/launch_game.py --ip) gets the same name after a restart.
+        """
+        key = (name.lower(), client.address)
+        remembered = self._twins.get(key)
+        now = self.backend.now()
+
+        def running(candidate):
+            return any(other is not client and other.name
+                       and other.name.lower() == candidate.lower()
+                       and now - other.last_seen < TWIN_LIVE for other in self.backend.clients)
+
+        if remembered and not running(remembered):
+            chosen = remembered
+        else:
+            chosen, n = name, 1
+            while running(chosen):
+                n += 1
+                chosen = "%s_%d" % (name, n)
+        self._twins[key] = chosen
+        if chosen != name:
+            self.log.info("%s signed in as %s while a game with that name is running - this one"
+                          " is %s (twin_logins)", client.address, name, chosen)
+        return chosen
+
     def _sign_in(self, ctx, name, tail: bool):
         client = ctx.client
         vport = ctx.packet.src
@@ -80,6 +126,8 @@ class TicketGranting(Service):
         if name == kerberos.TRACKING_NAME:
             pid = kerberos.TRACKING_PID
         else:
+            if self.backend.config.bool("twin_logins"):
+                name = self._twin_name(client, name)
             pid = self.backend.accounts.pid_for(name)
             # The player's identity on this game. Only a real login sets it, so that the
             # telemetry user signing in from the same address cannot take it over.

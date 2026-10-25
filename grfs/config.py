@@ -20,11 +20,22 @@ DEFAULTS = {
     "onlineconfig_port": "80",
     "auth_port": "21030",
     "secure_port": "21031",
+    # The NAT type detector, on this port and the one above it; 0 switches it off, and then
+    # every game's NAT type is Unknown (see grfs.punch).
+    "punch_port": "21032",
     "panel_port": "8080",
     "log_level": "info",
     "log_file": "logs/grfs.log",
     # Written into the station URL handed back on registration; the game's P2P socket.
     "game_port": "2347",
+    # One message for the main menu's news panel, if either is set; none by default.
+    "news_title": "",
+    "news_body": "",
+    # Two copies of the game on one machine signed in to one Ubisoft account: the second plays
+    # as name_2 instead of replacing the first (services.auth.TicketGranting._twin_name).
+    "twin_logins": "no",
+    # Where accounts, friends, clans and statistics are kept; relative to the project folder.
+    "data_dir": "data",
 }
 
 
@@ -58,5 +69,5 @@ class Config:
 
     def describe(self) -> str:
         shown = ("bind", "advertise", "onlineconfig_port", "auth_port", "secure_port",
-                 "panel_port", "game_port")
+                 "punch_port", "panel_port", "game_port")
         return ", ".join("%s=%s" % (k, self.get(k) or "-") for k in shown)

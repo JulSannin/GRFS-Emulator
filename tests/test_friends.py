@@ -78,12 +78,18 @@ class FriendsScreen(unittest.TestCase):
         self.assertEqual([(e["m_strName"], e["m_byRelationship"]) for e in mine],
                          [("NayNik", model.REQUEST_SENT)])
 
-        method, body = self.call(self.b, FRIENDS, "FriendsProtocol", 12,
-                                 {"byRelationship": model.REQUEST_RECEIVED, "bReversed": False})
-        waiting = self.read(method, body, "lstFriendsList")
-        self.assertEqual([(e["m_strName"], e["m_byRelationship"], e["m_strStatus"])
+        method, body = self.call(self.b, FRIENDS, "FriendsProtocol", 13, {"resultRange":
+                                 {"m_uiOffset": 0, "m_uiSize": 200}})
+        waiting = self.read(method, body, "lstRelationshipsList")
+        self.assertEqual([(e["m_strName"], e["m_byRelationship"], e["m_byStatus"])
                           for e in waiting],
-                         [("Nay1012", model.REQUEST_RECEIVED, "Online")])
+                         [("Nay1012", model.REQUEST_RECEIVED, 1)])
+
+        # GetDetailedList asked about 3 is the BLOCKLIST, so the request is not in it: that is
+        # where every request used to show a second time.
+        method, body = self.call(self.b, FRIENDS, "FriendsProtocol", 12,
+                                 {"byRelationship": 3, "bReversed": False})
+        self.assertEqual(self.read(method, body, "lstFriendsList"), [])
 
         # The message travels with it.
         method, body = self.call(self.b, FRIEND_MESSAGES_EXT,
@@ -162,16 +168,24 @@ class FriendsScreen(unittest.TestCase):
         self.assertEqual(len(self.read(method, body, "foundList")), 1)
         self.assertEqual(self.backend.accounts.get("NayNik").pid, self.b.pid)
 
-    def test_blocking_ends_the_friendship_and_shows_on_the_uplay_tab(self):
+    def test_blocking_ends_the_friendship_and_moves_them_to_the_blocklist(self):
         self.befriend()
         self.call(self.a, FRIENDS, "FriendsProtocol", 7, {"uiPlayer": self.b.pid,
                                                           "uiDetails": 0})
+        method, body = self.call(self.a, FRIENDS, "FriendsProtocol", 12,
+                                 {"byRelationship": 3, "bReversed": False})
+        self.assertEqual([(e["m_strName"], e["m_pid"]) for e in
+                          self.read(method, body, "lstFriendsList")], [("NayNik", self.b.pid)])
+        # Not on the Uplay side, where it would become an "offline" friend as well, and not in
+        # the contact list with rel 0, where it would be drawn as an ordinary friend.
         method, body = self.call(self.a, UBI_FRIENDS, "UbiFriendsProtocol", 7)
-        rows = self.read(method, body, "relationshipsList")
-        self.assertEqual([(r["m_relationship"], r["m_onBlacklist"]) for r in rows],
-                         [(model.NOT_A_FRIEND, True)])
+        self.assertEqual(self.read(method, body, "relationshipsList"), [])
+        method, body = self.call(self.a, FRIENDS, "FriendsProtocol", 13,
+                                 {"resultRange": {"m_uiOffset": 0, "m_uiSize": 200}})
+        self.assertEqual(self.read(method, body, "lstRelationshipsList"), [])
         # And the one who was blocked no longer has them as a friend either.
         self.assertEqual(self.backend.friends.contacts("NayNik"), [])
+        self.assertEqual(self.backend.friends.blacklist("NayNik"), [])
 
     def test_asking_somebody_who_already_asked_you_means_yes(self):
         self.call(self.a, FRIENDS, "FriendsProtocol", 2,
@@ -211,7 +225,7 @@ class EveryoneIsAFriend(FriendsScreen):
     test_a_request_has_two_sides = None
     test_accepting_makes_both_friends = None
     test_removing_a_friend_keeps_the_account = None
-    test_blocking_ends_the_friendship_and_shows_on_the_uplay_tab = None
+    test_blocking_ends_the_friendship_and_moves_them_to_the_blocklist = None
     test_asking_somebody_who_already_asked_you_means_yes = None
     test_a_quiet_player_is_offline_but_stays_in_the_list = None
 
