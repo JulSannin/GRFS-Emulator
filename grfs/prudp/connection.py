@@ -215,10 +215,32 @@ class ClientTable:
         return self._by_id.get(signature)
 
     def by_pid(self, pid: int):
+        """The player with this pid, preferring whoever was heard from most recently.
+
+        There can be more than one record: a game that restarts comes back from a different
+        source port, and until the old record is dropped both carry the same pid. Answering with
+        the stale one makes a player who is right here look like they left.
+        """
+        best = None
         for client in self._by_endpoint.values():
-            if client.pid == pid:
-                return client
-        return None
+            if client.pid == pid and (best is None or client.last_seen > best.last_seen):
+                best = client
+        return best
+
+    def drop_stale_with_pid(self, keep: Client) -> list:
+        """Forget other records for the same player - the ports they used before."""
+        gone = [c for c in list(self._by_endpoint.values())
+                if c is not keep and c.pid and c.pid == keep.pid]
+        for client in gone:
+            self.drop(client)
+        return gone
+
+    def reap(self, older_than: float, now: float) -> list:
+        """Forget records nothing has been heard from for a while."""
+        gone = [c for c in list(self._by_endpoint.values()) if now - c.last_seen > older_than]
+        for client in gone:
+            self.drop(client)
+        return gone
 
     def by_name(self, name: str):
         if not name:

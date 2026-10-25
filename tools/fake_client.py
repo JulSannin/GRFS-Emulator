@@ -137,6 +137,51 @@ class Connection:
         return message.parse(joined)
 
 
+class Player:
+    """A logged-in stand-in for one game: signs in, registers, and makes calls by name."""
+
+    def __init__(self, host, auth_port, secure_port, name, schema):
+        self.schema = schema
+        self.name = name
+        self.auth = Connection(host, auth_port, 0x7F260001)
+        self.auth.handshake()
+        method = schema.method("TicketGrantingProtocol", 2)
+        reply = self.auth.call(TICKET_GRANTING, 2, schema.encode_request(method, {
+            "strUserName": name,
+            "oExtraData": {"__class__": "UbiAuthenticationLoginCustomData",
+                           "m_userName": name, "m_onlineKey": "", "m_password": ""}}))
+        if not reply.success:
+            raise ValueError("%s could not log in: 0x%08X" % (name, reply.error))
+        r = Reader(reply.body)
+        r.u32()
+        self.pid = r.u32()
+        ticket = r.buffer()
+        session_key, _, _ = read_ticket(ticket, self.pid, b"UbiDummyPwd")
+        # The same socket for both servers, as the game does.
+        self.secure = Connection(host, secure_port, 0x7F270001, sock=self.auth.sock)
+        self.secure.handshake()
+        self.secure.connect_with_ticket(ticket, session_key)
+        method = schema.method("SecureConnectionProtocol", 4)
+        self.secure.call(SECURE_CONNECTION, 4, schema.encode_request(method, {
+            "vecMyURLs": ["prudp:/address=%s;port=2347;sid=15" % local_address(host)],
+            "hCustomData": {"__class__": "UbiAuthenticationLoginCustomData",
+                            "m_userName": name, "m_onlineKey": "", "m_password": ""}}))
+
+    def call(self, protocol, protocol_name, method_id, args=None):
+        method = self.schema.method(protocol_name, method_id)
+        if method is None:
+            raise KeyError("%s has no method %d in the schema" % (protocol_name, method_id))
+        reply = self.secure.call(protocol, method_id,
+                                 self.schema.encode_request(method, args or {}))
+        if not reply.success:
+            raise ValueError("%s.%s refused with 0x%08X" % (protocol_name, method.name,
+                                                            reply.error))
+        return self.schema.decode_response(method, reply.body)
+
+    def close(self):
+        self.auth.close()
+
+
 def read_ticket(blob, pid, password):
     key = derive_key(pid, password)
     body, mac = blob[:-16], blob[-16:]
@@ -156,6 +201,91 @@ def fetch_config(host, port):
     return {row["Name"]: row["Values"][0] for row in rows}
 
 
+def check_friends(host, auth_port, secure_port, schema, names):
+    """Two players find each other, ask, accept, and see each other in the list.
+
+    This is the path to co-op: the game looks for a friend's game by asking which sessions its
+    contacts are in, so nothing can be joined until this works.
+    """
+    from grfs.protocols import (FRIENDS, FRIEND_MESSAGES_EXT, SEARCH_FRIENDS,
+                                UBI_ACCOUNT_MANAGEMENT, UBI_FRIENDS)
+    print("\nfriends")
+    one = two = None
+    failures = 0
+    try:
+        one = Player(host, auth_port, secure_port, names[0], schema)
+        two = Player(host, auth_port, secure_port, names[1], schema)
+        ok("%s (pid 0x%X) and %s (pid 0x%X) are signed in" % (one.name, one.pid, two.name,
+                                                              two.pid))
+        # Start from nothing, so running this twice does the same thing twice.
+        one.call(FRIENDS, "FriendsProtocol", 9, {"uiPlayer": two.pid})
+        two.call(FRIENDS, "FriendsProtocol", 9, {"uiPlayer": one.pid})
+
+        found = one.call(SEARCH_FRIENDS, "SearchFriendsProtocol", 1,
+                         {"partOfName": two.name})["foundList"]
+        names_found = [f["m_strName"] for f in found]
+        if two.name in names_found:
+            ok("%s searched and found %s" % (one.name, ", ".join(names_found)))
+        else:
+            bad("%s searched for %s and found %s" % (one.name, two.name, names_found or "nobody"))
+            failures += 1
+
+        asked = one.call(FRIENDS, "FriendsProtocol", 2,
+                         {"strPlayerName": two.name, "uiDetails": 1,
+                          "strMessage": "co-op?"})["retval"]
+        ok("asked: %s" % asked) if asked else bad("the request was refused")
+        failures += 0 if asked else 1
+
+        waiting = two.call(FRIENDS, "FriendsProtocol", 12,
+                           {"byRelationship": 3, "bReversed": False})["lstFriendsList"]
+        if [w for w in waiting if w["m_strName"] == one.name]:
+            ok("%s sees an invitation from %s (%s)" % (two.name, one.name,
+                                                       waiting[0]["m_strStatus"]))
+        else:
+            bad("%s sees no invitation" % two.name)
+            failures += 1
+        messages = two.call(FRIEND_MESSAGES_EXT, "FriendMessagesExtensionServiceProtocol",
+                            2)["messages"]
+        note("with the message: %s" % (messages[0]["m_message"] if messages else "none"))
+
+        if two.call(FRIENDS, "FriendsProtocol", 5, {"uiPlayer": one.pid})["retval"]:
+            ok("%s accepted" % two.name)
+        else:
+            bad("accepting failed")
+            failures += 1
+
+        for player, other in ((one, two), (two, one)):
+            answer = player.call(FRIENDS, "FriendsProtocol", 13,
+                                 {"resultRange": {"m_uiOffset": 0, "m_uiSize": 200}})
+            rows = answer["lstRelationshipsList"]
+            mine = [r for r in rows if r["m_strName"] == other.name]
+            if answer["uiTotalCount"] == len(rows) and mine and mine[0]["m_byRelationship"] == 1:
+                ok("%s has %s as a friend, status %d (total %d)"
+                   % (player.name, other.name, mine[0]["m_byStatus"], answer["uiTotalCount"]))
+            else:
+                bad("%s sees %s" % (player.name, rows))
+                failures += 1
+
+        rows = one.call(UBI_FRIENDS, "UbiFriendsProtocol", 7)["relationshipsList"]
+        ids = [r["m_to"]["m_ubiAccountId"] for r in rows]
+        resolved = dict(one.call(UBI_ACCOUNT_MANAGEMENT, "UbiAccountManagementProtocol", 14,
+                                 {"UbiAccountIds": ids})["Usernames"])
+        if resolved:
+            ok("the Uplay tab resolves: %s" % ", ".join("%s -> %s" % kv
+                                                        for kv in resolved.items()))
+        else:
+            bad("the Uplay tab got no names back for %s" % ids)
+            failures += 1
+    except Exception as e:
+        bad(str(e))
+        failures += 1
+    finally:
+        for player in (one, two):
+            if player is not None:
+                player.close()
+    return failures
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--host", default="127.0.0.1")
@@ -167,6 +297,11 @@ def main(argv=None):
                         help="ask the configuration service where the server is, as the game does")
     parser.add_argument("--nat", action="store_true",
                         help="also send a NAT echo probe from this socket")
+    parser.add_argument("--friends", action="store_true",
+                        help="also sign in two players and have them become friends; this adds"
+                             " two accounts to the server's register")
+    parser.add_argument("--friend-names", nargs=2, metavar=("A", "B"),
+                        default=["fake-a", "fake-b"], help="the two accounts --friends uses")
     args = parser.parse_args(argv)
 
     schema = Schema().load_ddl_json(SCHEMA)
@@ -290,6 +425,9 @@ def main(argv=None):
             failures += 1
         finally:
             probe.close()
+
+    if args.friends:
+        failures += check_friends(args.host, auth_port, secure_port, schema, args.friend_names)
 
     print("\n%s%s%s\n" % (RED if failures else GREEN,
                           "%d step(s) failed" % failures if failures else "everything answered",

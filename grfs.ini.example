@@ -27,6 +27,11 @@ panel_port = 8080
 ; The game's own peer-to-peer port, written into the station URL handed back on registration.
 game_port = 2347
 
+; Makes everyone with an account here everyone else's friend, skipping the add-and-accept dance.
+; Handy for a server for two people; off by default, because the real flow works and invented
+; friendships get in the way when something else is wrong.
+auto_friends = no
+
 ; info is the normal level. debug adds the detail of each call; trace adds a line per packet and
 ; is for hunting something specific - it is a lot of lines.
 log_level = info

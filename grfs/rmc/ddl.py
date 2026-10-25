@@ -281,6 +281,18 @@ class Schema:
             self.write(w, p.type, args.get(p.name))
         return w.bytes()
 
+    def decode_response(self, m: MethodDef, data: bytes) -> dict:
+        """The other direction, for tools and tests that act as the client."""
+        r = Reader(data)
+        out = {}
+        if m.ret is not None:
+            out["retval"] = self.read(r, m.ret)
+        for p in m.outputs:
+            out[p.name] = self.read(r, p.type)
+        if r.remaining():
+            out["__trailing__"] = r.rest()
+        return out
+
 
 def _default_ret(t: TypeRef):
     return {"qresult": 0x10001, "bool": True}.get(t.name, 0)

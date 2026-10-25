@@ -17,6 +17,14 @@ from .onlineconfig import OnlineConfigServer
 from .panel import Panel
 
 
+async def housekeeping(backend) -> None:
+    """Forget records of games that have gone for good. Nothing else here is on a timer: the
+    server only ever answers, so there is no state that needs stirring."""
+    while True:
+        await asyncio.sleep(60)
+        backend.forget_quiet_clients()
+
+
 async def serve(config: Config) -> None:
     log = logs.get("main")
     backend = Backend(config)
@@ -34,6 +42,8 @@ async def serve(config: Config) -> None:
     panel = Panel(backend)
     await panel.start()
 
+    sweeper = asyncio.create_task(housekeeping(backend))
+
     log.info("ready: %s", config.describe())
     log.info("each machine that plays needs onlineconfigservice.ubi.com in its hosts file,"
              " pointing at this server")
@@ -42,9 +52,11 @@ async def serve(config: Config) -> None:
     except asyncio.CancelledError:
         pass
     finally:
+        sweeper.cancel()
         online_config.close()
         panel.close()
         backend.accounts.save()
+        backend.friends.save()
         log.info("stopped")
 
 

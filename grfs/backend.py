@@ -13,6 +13,7 @@ from . import log as logs
 from . import protocols
 from .accounts import Accounts
 from .config import Config
+from .friends import Friends
 from .kerberos import SERVER_PID
 from .nat import NatEcho
 from .prudp import packet as P
@@ -23,6 +24,17 @@ from .rmc.router import Router
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCHEMA_PATH = os.path.join(ROOT, "schema", "grfs-ddl.json")
 DATA_DIR = os.path.join(ROOT, "data")
+
+# How long a player may go quiet before they count as away. The game sends something about once
+# a second - a ping if nothing else - and every packet counts, so this is generous. It used to be
+# 45 seconds against RMC calls only, and a player sitting on a menu makes none: they went
+# offline in everyone's list, and their open session was pruned out from under them.
+PRESENCE_WINDOW = 90.0
+
+# How long a record is kept after that. Longer than the presence window on purpose: the record
+# holds the addresses other players reach this one at, and a player who steps away for a minute
+# should not have them thrown out from under them.
+FORGET_AFTER = 600.0
 
 
 class Backend:
@@ -35,6 +47,13 @@ class Backend:
         self.data_dir = data_dir if data_dir is not None else DATA_DIR
         self.accounts = Accounts(os.path.join(self.data_dir, "accounts.json")
                                  if self.data_dir else None)
+        self.friends = Friends(self.accounts,
+                               os.path.join(self.data_dir, "friends.json")
+                               if self.data_dir else None,
+                               everyone=self.config.bool("auto_friends"))
+        if self.friends.everyone:
+            self.log.info("auto_friends is on: everyone with an account here is everyone else's"
+                          " friend, and adding or removing is ignored")
         self.clients = ClientTable()
         self.router = Router(self)
         self.nat = NatEcho(self)
@@ -60,6 +79,37 @@ class Backend:
     def server_vport(self, client_vport: int) -> int:
         """Our end of a connection: port 1 on the same stream the client is using."""
         return (P.stream_of(client_vport) << 4) | 1
+
+    # ----- players --------------------------------------------------------------------------
+    def is_online(self, pid: int) -> bool:
+        """Whether this player is here now, worked out from when they were last heard from.
+
+        Presence needs no protocol: the game sends packets constantly and every one of them is
+        stamped. Silence is the only honest signal there is.
+        """
+        if not pid:
+            return False
+        client = self.clients.by_pid(pid)
+        return client is not None and (self.now() - client.last_seen) < PRESENCE_WINDOW
+
+    def forget_quiet_clients(self) -> list:
+        gone = self.clients.reap(FORGET_AFTER, self.now())
+        for client in gone:
+            self.log.info("forgetting %s at %s:%d - nothing for %d minutes",
+                          client.name or "an unnamed client", client.endpoint[0],
+                          client.endpoint[1], FORGET_AFTER // 60)
+        return gone
+
+    def ubi_account_id(self, name: str) -> str:
+        """A player's Ubisoft account id, which this server cannot know - nothing ever tells it
+        one - so the account name stands in. The pid beside it in every structure that carries
+        one is what the client actually matches players by."""
+        account = self.accounts.get(name)
+        return account.name if account else (name or "")
+
+    def name_for_ubi_account_id(self, account_id: str) -> str:
+        account = self.accounts.get(account_id)
+        return account.name if account else ""
 
     def address_for(self, client) -> str:
         """The address to hand *this* client so it can reach us back.
@@ -116,7 +166,10 @@ class Backend:
             "clients": [
                 {"name": c.name, "pid": c.pid, "address": "%s:%d" % c.endpoint,
                  "connections": len(c.links), "last_seen": c.last_seen,
-                 "urls": list(c.urls)}
+                 "urls": list(c.urls),
+                 "friends": [{"name": f.name, "pid": f.pid, "relationship": f.relationship,
+                              "online": self.is_online(f.pid)}
+                             for f in self.friends.contacts(c.name)] if c.name else []}
                 for c in self.clients
             ],
             "nat": {"answered": self.nat.answered, "keep_alives": self.nat.keep_alives},

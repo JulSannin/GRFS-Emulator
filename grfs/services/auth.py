@@ -86,6 +86,12 @@ class TicketGranting(Service):
             client.name = name
             client.pid = pid
             client.logged_in_at = self.backend.now()
+            # A game that was restarted comes back from a different source port, so the record
+            # of the port it used before is dead. Leaving it in place means two records for one
+            # player, and presence then depends on which of them is looked at first.
+            for stale in self.backend.clients.drop_stale_with_pid(client):
+                self.log.info("forgetting %s's earlier connection from %s:%d", name,
+                              *stale.endpoint)
 
         session_key = kerberos.new_session_key()
         ticket = kerberos.Ticket(pid, self.backend.server_pid, session_key, kerberos.new_blob())
