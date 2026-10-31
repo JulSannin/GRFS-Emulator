@@ -191,6 +191,24 @@ class Hosting(Sessions):
         self.assertEqual(result["m_hostURLs"], mine)
         self.assertEqual(result["m_hostPID"], self.alice.pid)
 
+    def test_incomplete_session_url_does_not_hide_the_lan_destination(self):
+        k = self.host(self.alice)
+        identity = "PID=%d;RVCID=79" % self.alice.pid
+        lan = "udp:/address=192.168.1.10;port=2346;" + identity
+        self.alice.call(G, "RegisterURLs", {"stationURLs": [identity, lan]})
+        self.assertEqual(self.get(self.bob, k)["m_hostURLs"], [lan])
+        self.assertTrue(self.logged("incomplete session URL, left out"))
+
+    def test_session_urls_need_a_transport_address_and_valid_port(self):
+        k = self.host(self.alice)
+        valid = "prudp:/address=192.168.1.10;port=2347;sid=15"
+        self.alice.call(G, "RegisterURLs", {"stationURLs": [
+            "udp:/address=192.168.1.10", "udp:/port=2346",
+            "udp:/address=192.168.1.10;port=abc",
+            "udp:/address=192.168.1.10;port=65536",
+            "udp:/address=192.168.1.10;port=0", valid]})
+        self.assertEqual(self.get(self.bob, k)["m_hostURLs"], [valid])
+
     def test_deleting(self):
         k = self.host(self.alice)
         self.alice.call(G, "SendInvitation", {"invitation": {

@@ -48,6 +48,7 @@ grfs.sessions.matches.
 from .. import protocols
 from .. import sessions as model
 from ..rmc.router import Errors, RmcError, Service
+from .nat_traversal import parse_url
 
 # The game's own notification types for this protocol (category 7).
 INVITATION_RECEIVED = 7005
@@ -71,7 +72,24 @@ class GameSession(Service):
         """Where other players reach this one: the host URLs in every result for its sessions.
         Until a game sends these, the URLs it registered with the secure server stand in."""
         pid = self._me(ctx)
-        self.sessions.urls[pid] = [u for u in (stationURLs or []) if u]
+        urls = []
+        for url in stationURLs or ():
+            if not url:
+                continue
+            scheme, fields = parse_url(url)
+            try:
+                port = int(fields.get("port", "0"))
+            except ValueError:
+                port = 0
+            if scheme.lower() not in ("udp", "prudp", "prudps") or not fields.get("address") \
+                    or not 0 < port <= 65535:
+                # A real client can register only PID/RVCID when its public address is not
+                # available yet. That identifies a player, but is no destination to probe.
+                self.log.info("%s registered an incomplete session URL, left out: %s",
+                              ctx.client.name, url)
+                continue
+            urls.append(url)
+        self.sessions.urls[pid] = urls
         self.log.info("%s registered %d session URL(s): %s", ctx.client.name,
                       len(self.sessions.urls[pid]), ", ".join(self.sessions.urls[pid]) or "-")
 
@@ -138,7 +156,12 @@ class GameSession(Service):
 
     # ----- 6 GetSession / 25 GetSessions -----------------------------------------------------
     def GetSession(self, ctx, gameSessionKey):
-        return {"searchResult": self._result(self._session(gameSessionKey))}
+        session = self._session(gameSessionKey)
+        result = self._result(session)
+        self.log.info("%s asked for session %d by %s; host URLs: %s", ctx.client.name,
+                      session.id, self._name(session.owner),
+                      ", ".join(result["m_hostURLs"]) or "none")
+        return {"searchResult": result}
 
     def GetSessions(self, ctx, gameSessionKeys):
         """The ones that still exist; a key for a session that is gone is left out."""
