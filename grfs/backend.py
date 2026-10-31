@@ -16,14 +16,15 @@ from .config import Config
 from .friends import Friends
 from .kerberos import SERVER_PID
 from .nat import NatEcho
+from .paths import resource_dir, runtime_dir
 from .prudp import packet as P
 from .prudp.connection import ClientTable
 from .rmc.ddl import Schema
 from .rmc.router import Router
 from .sessions import Sessions
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCHEMA_PATH = os.path.join(ROOT, "schema", "grfs-ddl.json")
+ROOT = str(runtime_dir())
+SCHEMA_PATH = str(resource_dir() / "schema" / "grfs-ddl.json")
 DATA_DIR = os.path.join(ROOT, "data")
 
 # How long a player may go quiet before they count as away. The game sends something about once
@@ -51,7 +52,7 @@ class Backend:
         if data_dir is None:
             data_dir = self.config.get("data_dir") or DATA_DIR
             if not os.path.isabs(data_dir):
-                data_dir = os.path.join(ROOT, data_dir)
+                data_dir = os.path.join(runtime_dir(), data_dir)
         self.data_dir = data_dir
         self.accounts = Accounts(os.path.join(self.data_dir, "accounts.json")
                                  if self.data_dir else None)

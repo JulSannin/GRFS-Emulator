@@ -4,10 +4,9 @@ that has none. Unpack anywhere, double-click a .bat.
     python tools/make_bundle.py                        downloads Python, writes dist/GRFS-Tools.zip
     python tools/make_bundle.py --python-zip FILE      uses an embeddable zip already on disk
 
-Not an exe on purpose. A one-file PyInstaller build unpacks itself into a temp folder and runs
-from there, which is exactly what Windows Defender and SmartScreen flag, and a file sent over a
-chat that the antivirus deletes is worse than no file. The embeddable Python is python.org's own
-signed build; nothing here is compiled or packed, and every script stays readable.
+An alternative to the two Windows executables built by tools/build_windows.py. The embeddable
+Python is python.org's own signed build; nothing here is compiled or packed, and every script
+stays readable.
 
 The server needs nothing outside the standard library, which is what makes this possible: the
 embeddable zip has no pip and no site-packages, and needs neither.

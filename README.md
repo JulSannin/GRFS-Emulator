@@ -8,6 +8,11 @@
 
 ## Запуск
 
+Для Windows есть сборка из двух приложений: `GRFS-Server.exe` и клиентский лаунчер
+`GRFS-Client.exe` с вводом IP сервера. Python на компьютерах игроков не нужен.
+Сборка — `build_windows.bat`; результат — `dist/GRFS-Windows-x64.zip`.
+Порядок запуска и настройки: [инструкция для Windows](docs/WINDOWS.md).
+
 ```powershell
 cd "D:\Steam\steamapps\common\Tom Clancy's Ghost Recon Future Soldier\GRFS-Emulator"
 python -m grfs
@@ -136,8 +141,8 @@ python tools\make_bundle.py        # dist\GRFS-Tools.zip, ~11 МБ
 Скачивает embeddable Python 3.11.9 с python.org (сверяет SHA-256, другой файл не берёт), кладёт
 рядом `grfs/`, `schema/`, `doctor.py`, `fake_game.py`, `fake_client.py` и `.bat`:
 `doctor.bat`, `p2p-test.bat`, `fake-game.bat`, `server.bat`. Распаковать куда угодно, запускать
-двойным щелчком. Без `data/`: чужие аккаунты в архив не попадают. Не exe намеренно: однофайловый
-PyInstaller распаковывает себя во временную папку, и именно это Defender удаляет из чатов.
+двойным щелчком. Без `data/`: чужие аккаунты в архив не попадают. Это альтернатива двум `.exe`
+из `build_windows.bat`: интерпретатор и исходники лежат в архиве отдельно.
 
 ### GRFS-Connect.exe для второго компьютера
 
@@ -253,7 +258,7 @@ Connect из папки игры, если его нет. Войти в Ubisoft 
 python -m unittest discover
 ```
 
-554 теста, ~2 минуты. Большая часть — живые: `grfs/harness.py` поднимает настоящий сервер в
+558 тестов, ~2 минуты. Большая часть — живые: `grfs/harness.py` поднимает настоящий сервер в
 потоке на свободных портах и временном каталоге данных, `grfs/fakegame.py` — клиент, который
 говорит с ним по настоящим UDP-сокетам так же, как игра (окно приёма, фрагменты, повторы,
 подпись на соединение). Несколько игроков в одном процессе — это несколько таких клиентов, ни

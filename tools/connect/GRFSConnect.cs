@@ -52,10 +52,11 @@ namespace GrfsConnect
 {
     internal static class Program
     {
-        private const string Usage =
-            "GRFS-Connect.exe [АДРЕС]          подключиться к серверу и запустить игру\n" +
-            "GRFS-Connect.exe --check [АДРЕС]  только проверить, ничего не меняя\n" +
-            "GRFS-Connect.exe --off            отключиться: убрать строку из hosts и правило брандмауэра";
+        private static readonly string ExecutableName = Path.GetFileName(Assembly.GetExecutingAssembly().Location);
+        private static readonly string Usage =
+            ExecutableName + " [АДРЕС]          подключиться к серверу и запустить игру\n" +
+            ExecutableName + " --check [АДРЕС]  только проверить, ничего не меняя\n" +
+            ExecutableName + " --off            отключиться: убрать строку из hosts и правило брандмауэра";
 
         private static bool interactive;
 
@@ -131,7 +132,7 @@ namespace GrfsConnect
                 {
                     if (suggestion == null)
                     {
-                        Report.Bad("Адрес сервера не задан: например,  GRFS-Connect.exe --check 192.168.1.8");
+                        Report.Bad("Адрес сервера не задан: например,  " + ExecutableName + " --check 192.168.1.8");
                         return 2;
                     }
                     text = suggestion;

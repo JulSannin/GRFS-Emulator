@@ -14,6 +14,8 @@ import logging
 import logging.handlers
 import os
 
+from .paths import runtime_dir
+
 LEVELS = {"debug": logging.DEBUG, "info": logging.INFO, "warning": logging.WARNING,
           "error": logging.ERROR}
 
@@ -74,8 +76,7 @@ def setup(level: str = "info", path: str = None) -> logging.Logger:
     root.addHandler(console)
     root.addHandler(ring)
     if path:
-        full = path if os.path.isabs(path) else os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), path)
+        full = path if os.path.isabs(path) else os.path.join(runtime_dir(), path)
         os.makedirs(os.path.dirname(full), exist_ok=True)
         # The previous run's log is kept rather than truncated: a crash is usually diagnosed from
         # the run before the restart.

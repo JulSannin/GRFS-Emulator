@@ -10,6 +10,8 @@ rest of the login hangs off, and dropped to offline mode.
 import configparser
 import os
 
+from .paths import runtime_dir
+
 DEFAULTS = {
     # The address to listen on. 0.0.0.0 is fine and preferred - what we advertise is worked out
     # per client, not taken from here.
@@ -42,7 +44,7 @@ DEFAULTS = {
 class Config:
     def __init__(self, path: str = None, overrides: dict = None):
         self.values = dict(DEFAULTS)
-        path = path or os.path.join(os.path.dirname(os.path.dirname(__file__)), "grfs.ini")
+        path = path or str(runtime_dir() / "grfs.ini")
         self.path = path if os.path.exists(path) else None
         if self.path:
             parser = configparser.ConfigParser()

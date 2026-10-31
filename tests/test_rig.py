@@ -7,6 +7,7 @@ import contextlib
 import io
 import json
 import os
+import random
 import socket
 import subprocess
 import sys
@@ -16,6 +17,7 @@ import unittest
 import warnings
 
 from grfs.fakegame import Player, Wire
+from grfs.punch import ANY_PORTS
 from tests.test_tools import load
 
 rig = load("rig")
@@ -219,7 +221,11 @@ def free_ports():
 
     def grab(kind, port=0):
         s = socket.socket(socket.AF_INET, kind)
-        s.bind(("0.0.0.0", port))
+        try:
+            s.bind(("0.0.0.0", port))
+        except OSError:
+            s.close()
+            raise
         held.append(s)
         return s.getsockname()[1]
     try:
@@ -228,8 +234,10 @@ def free_ports():
         for key in ("auth_port", "secure_port"):
             out[key] = grab(socket.SOCK_DGRAM)
         while "punch_port" not in out:
-            port = grab(socket.SOCK_DGRAM)
             try:
+                # Child startup can consume an ephemeral port after we release it. Use the
+                # production detector's range so both consecutive ports stay available.
+                port = grab(socket.SOCK_DGRAM, random.randrange(*ANY_PORTS))
                 grab(socket.SOCK_DGRAM, port + 1)
                 out["punch_port"] = port
             except OSError:

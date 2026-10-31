@@ -30,10 +30,10 @@ Bits 1 and 2 of the mask are the playlist's own (1046BA20) and say nothing about
 """
 
 import json
-import os
 
-PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "schema",
-                    "maps.json")
+from .paths import resource_dir
+
+PATH = str(resource_dir() / "schema" / "maps.json")
 
 ADVERSARIAL = 2
 

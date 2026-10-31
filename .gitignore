@@ -10,3 +10,7 @@ __pycache__/
 
 # Built bundles and the downloaded Python they are made from.
 dist/
+
+# Windows executable build environment and intermediate files.
+.venv-build/
+build/
