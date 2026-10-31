@@ -8,8 +8,14 @@ data/
 __pycache__/
 *.pyc
 
-# Built bundles and the downloaded Python they are made from.
-dist/
+# Publish only the portable Windows package; keep archives, downloads and local state out.
+dist/*
+!dist/GRFS-Server.exe
+!dist/GRFS-Client.exe
+!dist/grfs.ini.example
+!dist/WINDOWS.md
+!dist/app/
+!dist/python/
 
 # Windows executable build environment and intermediate files.
 .venv-build/

@@ -1,0 +1,3 @@
+# Preserve the downloaded Windows runtime and compiled launchers byte for byte.
+/dist/python/** -text -whitespace
+/dist/*.exe -text

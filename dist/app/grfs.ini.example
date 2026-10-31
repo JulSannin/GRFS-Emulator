@@ -1,0 +1,61 @@
+; Copy to grfs.ini to change anything. Every key can also be set from the environment as
+; GRFS_<KEY>, and a few from the command line (python -m grfs --help).
+;
+; The defaults are meant to be left alone. In particular there is no setting for "the address to
+; tell clients": that is worked out per client from where it connected from, because it has to be
+; different for a game on this machine and a game on the network.
+
+[server]
+; What to listen on. 0.0.0.0 means every interface, which is what you want for playing with
+; someone else; 127.0.0.1 keeps it to this machine.
+bind = 0.0.0.0
+
+; Only set this if the address this server would work out for itself is not the one clients can
+; reach - a router doing NAT in front of it, or a machine with interfaces where the choice goes
+; wrong. Leave empty otherwise.
+advertise =
+
+; Ports. The game is told about the authentication port through the configuration service, and it
+; expects the secure server to be the next one up.
+onlineconfig_port = 80
+auth_port = 21030
+secure_port = 21031
+
+; The status page, http://127.0.0.1:8080/. Set to 0 to switch it off.
+panel_port = 8080
+
+; The game's own peer-to-peer port, written into the station URL handed back on registration.
+game_port = 2347
+
+; Makes everyone with an account here everyone else's friend, skipping the add-and-accept dance.
+; Handy for a server for two people; off by default, because the real flow works and invented
+; friendships get in the way when something else is wrong.
+auto_friends = no
+
+; Two copies of the game on one machine, for a co-op test (tools/launch_game.py). Ubisoft Connect
+; signs both in to the same account; with this on, the second copy plays as <name>_2 instead of
+; replacing the first. Off by default: on a server for real players it would make a quick
+; restart look like a stranger.
+twin_logins = no
+
+; info is the normal level. debug adds the detail of each call; trace adds a line per packet and
+; is for hunting something specific - it is a lot of lines.
+log_level = info
+log_file = logs/grfs.log
+
+; The NAT type detector, on this UDP port and the one above it (both need to be open in a
+; firewall). The game learns its NAT type only from servers named by the configuration key
+; punch_DetectUrls, and refuses some joins with "Unable to join due to STRICT NAT"; this one
+; tells every game its NAT is Open (see grfs/punch.py). 0 switches it off, and the type is then
+; Unknown, as it is with Ubisoft's own configuration.
+punch_port = 21032
+
+; One message for the main menu's news panel. Nothing is shown while both are empty.
+news_title =
+news_body =
+
+; The server's tuning switches the game asks for (MiscProtocol.GetGenericSettings), as
+; key=value pairs; a value is a number or a date YYYY-MM-DD[ HH:MM]. 2 is an XP multiplier x 10,
+; applied between the dates in 0 and 1 - this is double XP over Christmas. The full list of keys
+; is in grfs/services/misc.py.
+; generic_settings = 2=20, 0=2026-12-24, 1=2026-12-27 06:00
