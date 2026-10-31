@@ -241,9 +241,18 @@ class Connection:
                            P.FLAG_RELIABLE | P.FLAG_NEED_ACK, self.session,
                            self.server_signature, self.seq, conn_sig=self.signature,
                            payload=P.wrap_payload(P.STREAM_RVSEC, payload))
-        reply = self._exchange(connect, lambda: self.connect_reply, timeout, "CONNECT")
-        if not reply.payload:
-            raise ValueError("the secure server did not answer the challenge")
+        # The plain CONNECT from handshake() may have been retried. Its late, empty ACK
+        # cannot answer this CONNECT's ticket challenge; keep waiting for the payload.
+        def answered():
+            reply = self.connect_reply
+            return reply if reply is not None and reply.payload else None
+
+        try:
+            reply = self._exchange(connect, answered, timeout, "CONNECT")
+        except TimeoutError:
+            if self.connect_reply is not None:
+                raise ValueError("the secure server did not answer the challenge") from None
+            raise
         r = Reader(P.unwrap_payload(P.STREAM_RVSEC, reply.payload))
         if r.u32() != 4:
             raise ValueError("the challenge answer is not four bytes long")

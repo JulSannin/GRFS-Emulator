@@ -114,6 +114,27 @@ class Loss(LiveTest):
 
 
 class Connections(LiveTest):
+    def test_a_delayed_plain_connect_ack_does_not_answer_the_ticket_challenge(self):
+        alice = self.player("alice")
+        stale = next(pkt for endpoint, data in alice.wire.history
+                     if endpoint == alice.secure.endpoint for pkt in P.parse(data)
+                     if pkt.type == P.CONNECT and pkt.has(P.FLAG_ACK) and not pkt.payload)
+        replayed = False
+
+        def delayed_ack(pkt):
+            nonlocal replayed
+            if not replayed and pkt.type == P.CONNECT and pkt.payload:
+                replayed = True
+                alice.secure.on_packet(stale)
+            return False
+
+        alice.wire.drop_out.append(delayed_ack)
+        # Lose the first real challenge reply, making the delayed plain ACK arrive alone.
+        alice.wire.drop_in.append(once(lambda pkt: pkt.type == P.CONNECT and bool(pkt.payload)))
+        code = 0x01020304
+        self.assertEqual(alice.secure.connect_with_ticket(alice.ticket, alice.session_key, code), code + 1)
+        self.assertTrue(replayed)
+
     def test_a_ping_is_answered(self):
         alice = self.player("alice")
         alice.secure.ping()
