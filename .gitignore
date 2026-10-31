@@ -16,6 +16,7 @@ dist/*
 !dist/WINDOWS.md
 !dist/app/
 !dist/python/
+!dist/linux/
 
 # Windows executable build environment and intermediate files.
 .venv-build/

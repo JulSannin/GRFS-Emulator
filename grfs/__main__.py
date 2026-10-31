@@ -8,6 +8,7 @@ built to avoid.
 
 import argparse
 import asyncio
+import signal
 import sys
 
 from . import log as logs
@@ -84,10 +85,9 @@ class Running:
 async def start(config: Config, data_dir: str = None, any_port: bool = False) -> Running:
     """Bring up every listener and return once they are all bound.
 
-    `any_port` binds every listener to free ports instead of the configured ones - for the
-    test harness, which must be able to run beside a real server. The game itself cannot use
-    that: it expects the secure server one port above the authentication server. A punch_port
-    of 0 switches the NAT type detector off either way.
+    `any_port` uses free ports for the test harness, which can run beside a real server.
+    Authentication and secure UDP ports still stay adjacent, as the game and diagnostic tools
+    expect. A punch_port of 0 switches the NAT type detector off either way.
 
     The detector is up before the configuration service, which names it: the game asks for
     the configuration once, at launch, and starts detecting straight away.
@@ -96,12 +96,38 @@ async def start(config: Config, data_dir: str = None, any_port: bool = False) ->
     loop = asyncio.get_running_loop()
     bind = config.get("bind", "0.0.0.0")
 
-    transports = []
-    for name in ("auth", "secure"):
-        port = 0 if any_port else getattr(backend, name + "_port")
+    async def endpoint(name, port):
         transport, server = await loop.create_datagram_endpoint(
             lambda n=name, p=port: PrudpServer(backend, n, p), local_addr=(bind, port))
         server.port = transport.get_extra_info("sockname")[1]
+        return transport, server
+
+    if any_port:
+        # Binding each to port 0 happens to yield consecutive ports on some Windows setups,
+        # but not on Linux. Keep the first socket bound while claiming its neighbour.
+        for _ in range(50):
+            auth = await endpoint("auth", 0)
+            if auth[1].port == 65535:
+                auth[0].close()
+                continue
+            try:
+                secure = await endpoint("secure", auth[1].port + 1)
+            except OSError:
+                auth[0].close()
+                continue
+            break
+        else:
+            raise OSError("cannot allocate adjacent authentication and secure UDP ports")
+    else:
+        auth = await endpoint("auth", backend.auth_port)
+        try:
+            secure = await endpoint("secure", backend.secure_port)
+        except BaseException:
+            auth[0].close()
+            raise
+
+    transports = []
+    for name, (transport, server) in (("auth", auth), ("secure", secure)):
         setattr(backend, name + "_port", server.port)
         backend.servers[name] = server
         transports.append(transport)
@@ -133,11 +159,22 @@ async def serve(config: Config) -> None:
     log.info("ready: %s", running.describe())
     log.info("each machine that plays needs onlineconfigservice.ubi.com in its hosts file,"
              " pointing at this server")
+    stopping = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    sigterm_registered = False
     try:
-        await asyncio.Event().wait()
+        if sys.platform != "win32":
+            try:
+                loop.add_signal_handler(signal.SIGTERM, stopping.set)
+                sigterm_registered = True
+            except (NotImplementedError, RuntimeError):
+                pass  # A non-main thread cannot install process signal handlers.
+        await stopping.wait()
     except asyncio.CancelledError:
         pass
     finally:
+        if sigterm_registered:
+            loop.remove_signal_handler(signal.SIGTERM)
         await running.stop()
 
 

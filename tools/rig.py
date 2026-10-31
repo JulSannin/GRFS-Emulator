@@ -281,7 +281,7 @@ def preflight(hosts_file=HOSTS_FILE, ports=None, game=None, processes=None):
         out.append((False, "Ubisoft Connect не установлен - без него игра не получит логин",
                     "setup_once.ps1 запустит установщик из папки игры; потом войти в аккаунт"))
 
-    busy = [("%s %d" % kind_port) for kind_port in _busy_ports(ports or PORTS)]
+    busy = [("%s %d" % kind_port) for kind_port in _busy_ports(PORTS if ports is None else ports)]
     out.append((not busy, "порты сервера свободны" if not busy else
                 "заняты: %s" % ", ".join(busy),
                 "" if not busy else "закрой другой сервер (python -m grfs) или rig.py down"))
